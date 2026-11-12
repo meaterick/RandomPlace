@@ -7,11 +7,12 @@ import {
 } from '../public/js/core.js';
 
 const read=name=>JSON.parse(fs.readFileSync(new URL(`../public/data/${name}.json`,import.meta.url),'utf8'));
-const overseas=read('overseas'),domestic=read('domestic');
-const catalog=normalizeCatalog(overseas,domestic);
+const overseas=read('overseas'),domestic=read('domestic'),seoulData=read('seoul');
+const catalog=normalizeCatalog(overseas,domestic,seoulData);
 const setting=patch=>({...defaults(),...patch});
 const world=catalog.filter(p=>p.scope==='overseas');
 const korea=catalog.filter(p=>p.scope==='domestic');
+const seoul=catalog.filter(p=>p.scope==='seoul');
 
 test('잘못되거나 오래된 설정을 허용된 기본값으로 복구해요',()=>{
   for(const value of [undefined,null,'bad',42])assert.deepEqual(sanitizeSettings(value),defaults());
@@ -149,4 +150,24 @@ test('기록 복원은 현재 목록에 없는 ID와 잘못된 행을 제거해�
   const valid={ids:[catalog[0].id],at:'2026-11-02T12:00:00Z'};
   const rows=[null,{ids:['removed-place'],at:valid.at},{ids:'bad',at:valid.at},{ids:[catalog[0].id]},{ids:[],at:valid.at},{ids:[catalog[0].id],at:'not-a-date'},valid];
   assert.deepEqual(readHistory(rows,catalog),[valid]);assert.deepEqual(readHistory('{broken',catalog),[]);
+});
+
+test('서울 범위는 서울 장소만 고르고 자치구·종류 조건을 함께 적용해요',()=>{
+  assert.equal(seoul.length,seoulData.destinations.length);
+  const all=filterPlaces(catalog,setting({mode:'seoul'}));
+  assert.equal(all.length,seoul.length);assert.ok(all.every(p=>p.scope==='seoul'&&p.id.startsWith('seoul-')));
+  const jongno=filterPlaces(catalog,setting({mode:'seoul',seoulGu:'11010'}));
+  assert.ok(jongno.length>0&&jongno.every(p=>p.area==='종로구'));
+  const palaces=filterPlaces(catalog,setting({mode:'seoul',seoulGu:'11010',seoulCategory:'history'}));
+  assert.ok(palaces.some(p=>p.name==='경복궁'));assert.ok(palaces.every(p=>p.category==='history'&&p.area==='종로구'));
+  assert.equal(filterPlaces(catalog,setting({mode:'seoul',kind:'county',includeIslands:false})).length,seoul.length,'국내 전용 조건은 서울 범위에 영향을 주지 않아요');
+  const recent=[{ids:[all[0].id],at:new Date().toISOString()}];
+  assert.equal(filterPlaces(catalog,setting({mode:'seoul'}),recent).length,seoul.length-1);
+  assert.deepEqual(sanitizeSettings({mode:'seoul',seoulGu:'11230',seoulCategory:'park'}),setting({mode:'seoul',seoulGu:'11230',seoulCategory:'park'}));
+});
+
+test('서울 3곳 추첨은 경보 조회 없이 중복 없이 골라요',async()=>{
+  const pool=filterPlaces(catalog,setting({mode:'seoul',quantity:3}));
+  const chosen=await pickPlaces(pool,setting({mode:'seoul',quantity:3}),{verify:()=>{throw new Error('서울은 경보를 조회하지 않아요');}});
+  assert.equal(chosen.length,3);assert.equal(new Set(chosen.map(p=>p.id)).size,3);assert.ok(chosen.every(p=>p.scope==='seoul'));
 });

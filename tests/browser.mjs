@@ -7,6 +7,7 @@ import { serve } from '../scripts/serve.mjs';
 
 const overseas=JSON.parse(fs.readFileSync(new URL('../public/data/overseas.json',import.meta.url),'utf8')).destinations;
 const domestic=JSON.parse(fs.readFileSync(new URL('../public/data/domestic.json',import.meta.url),'utf8')).destinations;
+const seoul=JSON.parse(fs.readFileSync(new URL('../public/data/seoul.json',import.meta.url),'utf8')).destinations;
 let server,browser,base;
 before(async()=>{
   server=await serve(0);base=`http://127.0.0.1:${server.address().port}/`;
@@ -54,6 +55,25 @@ test('국내 시도 필터와 경기도 31개 시군이 독립적으로 동작�
     await page.click('#candidateBtn');const names=await page.locator('#candidateList strong').allTextContents();
     assert.deepEqual([...names].sort(),['가평군','양평군','연천군']);
     await page.keyboard.press('Escape');
+    assert.equal(requests.length,0);assert.deepEqual(errors,[]);
+  }finally{await context.close();}
+});
+
+test('서울 범위는 자치구·종류로 좁히고 경보 조회 없이 결과를 보여 줘요',async()=>{
+  const {page,context,errors,requests}=await visit();
+  try{
+    await mode(page,'seoul');assert.equal(await count(page),seoul.length);
+    assert.equal(await page.locator('#seoulCount').innerText(),String(seoul.length));
+    assert.equal(await page.locator('#kind').isVisible(),false);
+    await page.selectOption('#seoulGu','11010');assert.equal(await count(page),seoul.filter(p=>p.regionCode==='11010').length);
+    await page.selectOption('#seoulCategory','history');const expected=seoul.filter(p=>p.regionCode==='11010'&&p.category==='history');
+    assert.equal(await count(page),expected.length);
+    await page.click('#candidateBtn');assert.ok((await page.locator('#candidateList').innerText()).includes('경복궁'));await page.keyboard.press('Escape');
+    await page.check('input[name=quantity][value="3"]');await draw(page,3);
+    const ids=await resultIds(page);assert.equal(new Set(ids).size,3);assert.ok(ids.every(id=>expected.some(p=>p.id===id)));
+    assert.match(await page.locator('#resultGrid .place-area').first().innerText(),/종로구 · 궁궐·역사/);
+    assert.equal(await page.locator('#mapSvg path.land').count(),25);
+    await page.screenshot({path:fileURLToPath(new URL('../../randomplace-seoul.png',import.meta.url)),fullPage:true});
     assert.equal(requests.length,0);assert.deepEqual(errors,[]);
   }finally{await context.close();}
 });

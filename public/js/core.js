@@ -1,8 +1,8 @@
-export const defaults=()=>({mode:'overseas',continent:'all',country:'all',province:'all',ggCity:'all',kind:'all',quantity:1,avoidRecent:true,includeIslands:false,animation:'auto',risk:1});
+export const defaults=()=>({mode:'overseas',continent:'all',country:'all',province:'all',ggCity:'all',seoulGu:'all',seoulCategory:'all',kind:'all',quantity:1,avoidRecent:true,includeIslands:false,animation:'auto',risk:1});
 export function sanitizeSettings(value){
   const s=defaults();if(!value||typeof value!=='object')return s;
-  for(const key of ['continent','country','province','ggCity'])if(typeof value[key]==='string'&&value[key].length<80)s[key]=value[key];
-  if(['overseas','domestic','gyeonggi'].includes(value.mode))s.mode=value.mode;
+  for(const key of ['continent','country','province','ggCity','seoulGu','seoulCategory'])if(typeof value[key]==='string'&&value[key].length<80)s[key]=value[key];
+  if(['overseas','domestic','gyeonggi','seoul'].includes(value.mode))s.mode=value.mode;
   if(['all','city','county'].includes(value.kind))s.kind=value.kind;
   if(['auto','short','none'].includes(value.animation))s.animation=value.animation;
   for(const key of ['avoidRecent','includeIslands'])if(typeof value[key]==='boolean')s[key]=value[key];
@@ -10,8 +10,8 @@ export function sanitizeSettings(value){
   if([0,1].includes(value.risk))s.risk=value.risk;
   return s;
 }
-export function normalizeCatalog(overseas,domestic){
-  return [...overseas.destinations.filter(p=>p.countryCode!=='KOR'&&p.curation==='korean-traveler-famous-city'&&p.landmass==='continental-mainland'&&p.continent!=='Africa').map(p=>({...p,id:'world-'+p.id,name:p.city,region:p.country,regionCode:p.countryCode,scope:'overseas'})),...domestic.destinations.map(p=>({...p,scope:'domestic'}))];
+export function normalizeCatalog(overseas,domestic,seoul={destinations:[]}){
+  return [...overseas.destinations.filter(p=>p.countryCode!=='KOR'&&p.curation==='korean-traveler-famous-city'&&p.landmass==='continental-mainland'&&p.continent!=='Africa').map(p=>({...p,id:'world-'+p.id,name:p.city,region:p.country,regionCode:p.countryCode,scope:'overseas'})),...domestic.destinations.map(p=>({...p,scope:'domestic'})),...seoul.destinations.map(p=>({...p,scope:'seoul'}))];
 }
 export function filterPlaces(catalog,settings,history=[]){
   const s=sanitizeSettings(settings),recent=new Set(history.slice(0,20).flatMap(h=>h.ids||[]));
@@ -20,6 +20,10 @@ export function filterPlaces(catalog,settings,history=[]){
       if(p.scope!=='overseas'||p.continent==='Africa'||p.landmass!=='continental-mainland')return false;
       if(s.continent!=='all'&&p.continent!==s.continent)return false;
       if(s.country!=='all'&&p.countryCode!==s.country)return false;
+    }else if(s.mode==='seoul'){
+      if(p.scope!=='seoul')return false;
+      if(s.seoulGu!=='all'&&p.regionCode!==s.seoulGu)return false;
+      if(s.seoulCategory!=='all'&&p.category!==s.seoulCategory)return false;
     }else{
       if(p.scope!=='domestic')return false;
       if(s.mode==='gyeonggi'&&(p.regionCode!=='31'||(s.ggCity!=='all'&&p.id!==s.ggCity)))return false;
