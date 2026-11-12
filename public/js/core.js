@@ -1,17 +1,27 @@
-export const defaults=()=>({mode:'overseas',continent:'all',country:'all',province:'all',ggCity:'all',seoulGu:'all',seoulCategory:'all',kind:'all',quantity:1,avoidRecent:true,includeIslands:false,animation:'auto',risk:1});
+export const SPOT_CATEGORIES=['history','park','mountain','sea','river','street','market','culture','landmark'];
+export const defaults=()=>({mode:'overseas',continent:'all',country:'all',province:'all',ggCity:'all',seoulGu:'all',seoulCategory:'all',spotType:'all',kind:'all',quantity:1,avoidRecent:true,includeIslands:false,animation:'auto',risk:1});
 export function sanitizeSettings(value){
   const s=defaults();if(!value||typeof value!=='object')return s;
   for(const key of ['continent','country','province','ggCity','seoulGu','seoulCategory'])if(typeof value[key]==='string'&&value[key].length<80)s[key]=value[key];
   if(['overseas','domestic','gyeonggi','seoul'].includes(value.mode))s.mode=value.mode;
   if(['all','city','county'].includes(value.kind))s.kind=value.kind;
+  if(['all','spot','district',...SPOT_CATEGORIES].includes(value.spotType))s.spotType=value.spotType;
   if(['auto','short','none'].includes(value.animation))s.animation=value.animation;
   for(const key of ['avoidRecent','includeIslands'])if(typeof value[key]==='boolean')s[key]=value[key];
   if([1,3].includes(value.quantity))s.quantity=value.quantity;
   if([0,1].includes(value.risk))s.risk=value.risk;
   return s;
 }
-export function normalizeCatalog(overseas,domestic,seoul={destinations:[]}){
-  return [...overseas.destinations.filter(p=>p.countryCode!=='KOR'&&p.curation==='korean-traveler-famous-city'&&p.landmass==='continental-mainland'&&p.continent!=='Africa').map(p=>({...p,id:'world-'+p.id,name:p.city,region:p.country,regionCode:p.countryCode,scope:'overseas'})),...domestic.destinations.map(p=>({...p,scope:'domestic'})),...seoul.destinations.map(p=>({...p,scope:'seoul'}))];
+// 국내 후보는 시·군·구 대표점(district)과 여행 명소(spot)로 나뉘고, 모두 시도(province)와 상위 시·군·구(parent)를 가져요.
+// 서울 범위의 장소도 국내 범위에서는 서울특별시의 명소로 함께 뽑혀요.
+const empty={destinations:[]};
+export function normalizeCatalog(overseas,domestic,seoul=empty,spots=empty){
+  return [
+    ...overseas.destinations.filter(p=>p.countryCode!=='KOR'&&p.curation==='korean-traveler-famous-city'&&p.landmass==='continental-mainland'&&p.continent!=='Africa').map(p=>({...p,id:'world-'+p.id,name:p.city,region:p.country,regionCode:p.countryCode,scope:'overseas'})),
+    ...domestic.destinations.map(p=>({...p,scope:'domestic',type:'district',province:p.regionCode,parent:p.id})),
+    ...spots.destinations.map(p=>({...p,scope:'domestic',type:'spot',province:p.regionCode,parent:p.parentId})),
+    ...seoul.destinations.map(p=>({...p,scope:'seoul',type:'spot',province:'11',parent:'kr-'+p.regionCode,kind:'city',island:false})),
+  ];
 }
 export function filterPlaces(catalog,settings,history=[]){
   const s=sanitizeSettings(settings),recent=new Set(history.slice(0,20).flatMap(h=>h.ids||[]));
@@ -25,14 +35,30 @@ export function filterPlaces(catalog,settings,history=[]){
       if(s.seoulGu!=='all'&&p.regionCode!==s.seoulGu)return false;
       if(s.seoulCategory!=='all'&&p.category!==s.seoulCategory)return false;
     }else{
-      if(p.scope!=='domestic')return false;
-      if(s.mode==='gyeonggi'&&(p.regionCode!=='31'||(s.ggCity!=='all'&&p.id!==s.ggCity)))return false;
-      if(s.mode==='domestic'&&s.province!=='all'&&p.regionCode!==s.province)return false;
+      if(p.scope!=='domestic'&&!(p.scope==='seoul'&&s.mode==='domestic'))return false;
+      if(s.mode==='gyeonggi'&&(p.province!=='31'||(s.ggCity!=='all'&&p.parent!==s.ggCity)))return false;
+      if(s.mode==='domestic'&&s.province!=='all'&&p.province!==s.province)return false;
+      if(s.spotType==='spot'&&p.type!=='spot')return false;
+      if(s.spotType==='district'&&p.type!=='district')return false;
+      if(SPOT_CATEGORIES.includes(s.spotType)&&(p.type!=='spot'||p.category!==s.spotType))return false;
       if(s.kind!=='all'&&p.kind!==s.kind)return false;
       if(!s.includeIslands&&p.island)return false;
     }
     return !s.avoidRecent||!recent.has(p.id);
   });
+}
+// 추첨 연출: 후보 사이를 빠르게 옮겨 다니다가(간격 고정) 결과 앞에서 점점 느려지며 멈춰요.
+export const rouletteProfile=(animation,reduced)=>animation==='none'||(animation==='auto'&&reduced)?null
+  :animation==='short'?{spin:300,interval:55,landing:[4,3],slowest:230,hold:160}
+  :{spin:1000,interval:65,landing:[9,6],slowest:430,hold:320};
+export function landingDelays(steps,profile){
+  return Array.from({length:steps},(_,i)=>{const t=steps<2?1:i/(steps-1);return Math.round(profile.interval+(profile.slowest-profile.interval)*t*t);});
+}
+export function nextHop(pool,previous,rng=random){
+  if(pool.length<2)return pool[0];
+  let index=Math.min(pool.length-1,Math.floor(rng()*(pool.length-1)));
+  if(pool[index]===previous)index=pool.length-1;
+  return pool[index];
 }
 export const random=()=>crypto.getRandomValues(new Uint32Array(1))[0]/4294967296;
 export async function pickPlaces(pool,settings,{verify,signal,rng=random,onProgress=()=>{}}={}){

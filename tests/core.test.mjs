@@ -3,15 +3,16 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {
   defaults,sanitizeSettings,normalizeCatalog,filterPlaces,pickPlaces,
-  loadLocal,saveLocal,readHistory,
+  loadLocal,saveLocal,readHistory,rouletteProfile,landingDelays,nextHop,
 } from '../public/js/core.js';
 
 const read=name=>JSON.parse(fs.readFileSync(new URL(`../public/data/${name}.json`,import.meta.url),'utf8'));
-const overseas=read('overseas'),domestic=read('domestic'),seoulData=read('seoul');
-const catalog=normalizeCatalog(overseas,domestic,seoulData);
+const overseas=read('overseas'),domestic=read('domestic'),seoulData=read('seoul'),spotData=read('korea-spots');
+const catalog=normalizeCatalog(overseas,domestic,seoulData,spotData);
 const setting=patch=>({...defaults(),...patch});
 const world=catalog.filter(p=>p.scope==='overseas');
 const korea=catalog.filter(p=>p.scope==='domestic');
+const districts=korea.filter(p=>p.type==='district'),spots=korea.filter(p=>p.type==='spot');
 const seoul=catalog.filter(p=>p.scope==='seoul');
 
 test('잘못되거나 오래된 설정을 허용된 기본값으로 복구해요',()=>{
@@ -31,11 +32,13 @@ test('실제 해외·국내 자료를 이름·지역·좌표가 있는 공통 �
   assert.equal(world.length,overseas.destinations.filter(p=>p.countryCode!=='KOR').length);
   assert.ok(overseas.destinations.some(p=>p.countryCode==='KOR'),'이전 해외 목록에 있던 한국 도시를 검증해요');
   assert.equal(world.some(p=>p.countryCode==='KOR'),false,'한국 도시는 해외 범위에서 제외돼요');
-  assert.equal(korea.length,domestic.destinations.length);
+  assert.equal(districts.length,domestic.destinations.length);assert.equal(spots.length,spotData.destinations.length);
   assert.equal(new Set(catalog.map(p=>p.id)).size,catalog.length);
   for(const p of catalog){assert.ok(p.name&&p.region&&p.regionCode);assert.ok(Number.isFinite(p.lat)&&Number.isFinite(p.lon));}
   for(const p of world){assert.ok(p.id.startsWith('world-'));assert.equal(p.name,p.city);assert.equal(p.region,p.country);}
-  for(const p of korea)assert.ok(p.id.startsWith('kr-'));
+  for(const p of districts)assert.ok(p.id.startsWith('kr-')&&p.parent===p.id);
+  const ids=new Set(districts.map(p=>p.id));
+  for(const p of spots){assert.ok(p.id.startsWith('spot-'));assert.ok(ids.has(p.parent),'명소는 실제 시·군·구에 속해요');assert.equal(p.province,p.parent.slice(3,5));}
 });
 
 test('선정되지 않은 도시·섬·아프리카를 해외 자료에 섞어도 정규화에서 제외해요',()=>{
@@ -54,22 +57,26 @@ test('해외 모드의 대륙과 국가 설정은 국내 자료와 다른 나라
 
 test('국내 모드는 선택한 시도만 남기고 해외 국가 설정을 적용하지 않아요',()=>{
   const seoul=filterPlaces(catalog,setting({mode:'domestic',province:'11',country:'FRA',continent:'Europe'}));
-  assert.ok(seoul.length>0);assert.ok(seoul.every(p=>p.scope==='domestic'&&p.regionCode==='11'));
-  const all=filterPlaces(catalog,setting({mode:'domestic',includeIslands:true}));assert.equal(all.length,korea.length);
+  assert.ok(seoul.length>0);assert.ok(seoul.every(p=>p.province==='11'));
+  assert.ok(seoul.some(p=>p.type==='district')&&seoul.some(p=>p.scope==='seoul'),'서울 자치구 대표점과 서울 명소를 함께 뽑아요');
+  const all=filterPlaces(catalog,setting({mode:'domestic',includeIslands:true}));assert.equal(all.length,korea.length+seoulData.destinations.length);
 });
 
 test('경기도 모드는 31개 시군으로 한정하고 다른 국내 시도 설정과 분리돼요',()=>{
-  const rows=filterPlaces(catalog,setting({mode:'gyeonggi',province:'11'}));
+  const rows=filterPlaces(catalog,setting({mode:'gyeonggi',province:'11',spotType:'district'}));
   assert.equal(rows.length,31);assert.ok(rows.every(p=>p.regionCode==='31'));
   assert.equal(new Set(rows.map(p=>p.name)).size,31);
   const suwon=rows.find(p=>p.name==='수원시');assert.ok(suwon);
-  assert.deepEqual(filterPlaces(catalog,setting({mode:'gyeonggi',ggCity:suwon.id})).map(p=>p.name),['수원시']);
+  assert.deepEqual(filterPlaces(catalog,setting({mode:'gyeonggi',ggCity:suwon.id,spotType:'district'})).map(p=>p.name),['수원시']);
+  const suwonAll=filterPlaces(catalog,setting({mode:'gyeonggi',ggCity:suwon.id}));
+  assert.ok(suwonAll.some(p=>p.name==='수원화성'));assert.ok(suwonAll.every(p=>p.parent===suwon.id));
 });
 
 test('도시·군 설정은 결과 유형을 정확히 제한해요',()=>{
-  const counties=filterPlaces(catalog,setting({mode:'gyeonggi',kind:'county'}));
+  const counties=filterPlaces(catalog,setting({mode:'gyeonggi',kind:'county',spotType:'district'}));
   assert.deepEqual(counties.map(p=>p.name).sort(),['가평군','양평군','연천군']);
-  const cities=filterPlaces(catalog,setting({mode:'gyeonggi',kind:'city'}));
+  assert.ok(filterPlaces(catalog,setting({mode:'gyeonggi',kind:'county',spotType:'spot'})).every(p=>['가평군','양평군','연천군'].includes(p.area)));
+  const cities=filterPlaces(catalog,setting({mode:'gyeonggi',kind:'city',spotType:'district'}));
   assert.equal(cities.length,28);assert.ok(cities.every(p=>p.kind==='city'));
 });
 
@@ -170,4 +177,28 @@ test('서울 3곳 추첨은 경보 조회 없이 중복 없이 골라요',async(
   const pool=filterPlaces(catalog,setting({mode:'seoul',quantity:3}));
   const chosen=await pickPlaces(pool,setting({mode:'seoul',quantity:3}),{verify:()=>{throw new Error('서울은 경보를 조회하지 않아요');}});
   assert.equal(chosen.length,3);assert.equal(new Set(chosen.map(p=>p.id)).size,3);assert.ok(chosen.every(p=>p.scope==='seoul'));
+});
+
+test('장소 종류는 명소·대표점·명소 분류로 국내와 경기도 후보를 나눠요',()=>{
+  const all=filterPlaces(catalog,setting({mode:'gyeonggi'})),spot=filterPlaces(catalog,setting({mode:'gyeonggi',spotType:'spot'})),district=filterPlaces(catalog,setting({mode:'gyeonggi',spotType:'district'}));
+  assert.equal(all.length,spot.length+district.length);assert.ok(spot.length>=80);assert.ok(spot.every(p=>p.type==='spot'&&p.province==='31'));
+  const sea=filterPlaces(catalog,setting({mode:'domestic',spotType:'sea',includeIslands:true}));
+  assert.ok(sea.length>0&&sea.every(p=>p.type==='spot'&&p.category==='sea'));
+  const history=filterPlaces(catalog,setting({mode:'domestic',province:'11',spotType:'history'}));
+  assert.ok(history.some(p=>p.name==='경복궁'),'국내 범위의 서울 역사 명소에 서울 장소가 포함돼요');
+  assert.equal(sanitizeSettings({spotType:'beach'}).spotType,'all');assert.equal(sanitizeSettings({spotType:'sea'}).spotType,'sea');
+  assert.equal(filterPlaces(catalog,setting({mode:'gyeonggi',spotType:'sea'})).some(p=>p.name==='제부도'),false,'섬 명소는 섬 포함을 켜야 나와요');
+  assert.ok(filterPlaces(catalog,setting({mode:'gyeonggi',spotType:'sea',includeIslands:true})).some(p=>p.name==='제부도'));
+});
+
+test('추첨 연출은 설정과 기기 설정에 맞춰 점점 느려지는 간격을 만들어요',()=>{
+  assert.equal(rouletteProfile('none',false),null);assert.equal(rouletteProfile('auto',true),null);
+  const full=rouletteProfile('auto',false),short=rouletteProfile('short',true);
+  assert.ok(full&&short);assert.ok(short.spin<full.spin);
+  const delays=landingDelays(full.landing[0],full);
+  assert.equal(delays.length,full.landing[0]);assert.equal(delays[0],full.interval);assert.equal(delays.at(-1),full.slowest);
+  for(let i=1;i<delays.length;i++)assert.ok(delays[i]>=delays[i-1]);
+  const pool=[{id:'a'},{id:'b'},{id:'c'}];let last;
+  for(let i=0;i<50;i++){const next=nextHop(pool,last);assert.notEqual(next,last);assert.ok(pool.includes(next));last=next;}
+  assert.equal(nextHop([pool[0]],pool[0]),pool[0]);
 });
